@@ -1,0 +1,32 @@
+{
+  "name": "appsgolem-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the AppsGolem YouTube cutter API — cut clips programmatically, or let an AI agent do it. TypeScript/Node port of the Python appsgolem-mcp.",
+  "keywords": ["mcp", "model-context-protocol", "youtube", "video", "cutter", "appsgolem", "ai"],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "appsgolem-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
