@@ -61,12 +61,13 @@ server.registerTool(
   {
     title: "Cut a YouTube video",
     description:
-      "Cut a clip (or clips) from a YouTube video and return a download URL. " +
-      "Submits a cut job to AppsGolem and (by default) polls until it's produced, " +
-      "then returns the download URL. Pricing: 1 credit per produced clip (4K = 4/clip; " +
-      "source > 2h = +1 once); a batch/stitch of N clips costs N per-clip. Failed cuts " +
-      "are never billed. On a wait-timeout the result has still_processing=true; poll " +
-      "get_cut_status with the returned id.",
+      "Cut a clip (or clips) from a YouTube video and return its download URL. " +
+      "Submits a cut job to AppsGolem and (by default) polls until it's produced, then " +
+      "returns the produced status — which includes a download_url once a download token " +
+      "is ready. Pricing: 1 credit per produced clip (4K = 4/clip, except audio_only " +
+      "which stays 1; a known source duration > 2h adds +1 once); a batch/stitch of N " +
+      "clips costs N per-clip. Failed cuts are never billed. On a wait-timeout the result " +
+      "has still_processing=true; poll get_cut_status with the returned id.",
     inputSchema: {
       url: z
         .string()
@@ -74,35 +75,38 @@ server.registerTool(
       start: z
         .string()
         .nullish()
-        .describe('Clip start as "SS"/"MM:SS"/"HH:MM:SS". Omit when passing clips.'),
+        .describe('Clip start as "SS"/"MM:SS"/"HH:MM:SS" (≤300h). Omit when passing clips.'),
       end: z
         .string()
         .nullish()
-        .describe('Clip end as "SS"/"MM:SS"/"HH:MM:SS". Omit when passing clips.'),
+        .describe('Clip end as "SS"/"MM:SS"/"HH:MM:SS" (≤300h). Omit when passing clips.'),
       resolution: z
         .string()
         .default("1080p")
-        .describe("360p/480p/720p/1080p (default)/1440p/2160p (4K; total cut ≤60 min)."),
+        .describe("144p/240p/360p/480p/720p/1080p (default)/1440p/2160p (4K; total cut ≤60 min)."),
       mode: z
         .string()
         .default("video")
         .describe(
-          'One of "video" (MP4, default), "audio_only" (mp3/m4a/wav/flac), "both" ' +
-            '(MP4+MP3 zip), "nosound" (MP4, no audio), "short" (9:16 vertical, AI ' +
-            'smart-crop), "gif" (animated GIF, ≤5 min), "frames" (JPG stills).',
+          'One of "video" (video file, default; MP4 normally, source container e.g. ' +
+            'WebM in fast mode), "audio_only" (mp3/m4a/wav/flac), "both" (video + MP3 ' +
+            'zip), "nosound" (video, no audio), "short" (portrait 9:16; AI smart-crop ' +
+            'when applicable, else letterbox-blur with source-dependent aspect), "gif" ' +
+            '(animated GIF, ≤5 min), ' +
+            '"frames" (JPG stills).',
         ),
       audio_format: z
         .string()
         .nullish()
-        .describe('For audio_only — "mp3"(default)/"m4a"/"wav"/"flac".'),
+        .describe('audio_only output format — "mp3"(default)/"m4a"/"wav"/"flac". both always produces MP3.'),
       bitrate: z
         .string()
         .nullish()
-        .describe('MP3 bitrate "320"(default)/"256"/"192"/"128" (audio_only/both).'),
+        .describe('Lossy-audio bitrate "320"(default)/"256"/"192"/"128" — MP3/M4A in audio_only, MP3 in both; ignored for wav/flac.'),
       fast: z
         .boolean()
         .nullish()
-        .describe("Stream-copy (≈10× faster, keyframe-aligned); video/nosound/both only."),
+        .describe("Stream-copy (≈10× faster, keyframe-aligned); video/nosound/both only. Mutually exclusive with a non-1× speed — fast wins and speed is forced to 1.0."),
       speed: z
         .number()
         .nullish()
@@ -111,7 +115,7 @@ server.registerTool(
         .number()
         .int()
         .nullish()
-        .describe("Frames sampling interval — 100/500/1000/2000(default)/5000/10000."),
+        .describe("Frames sampling interval — 100/500/1000/2000(default)/5000/10000; non-sheet extraction is capped at 1800 JPGs total across all clips."),
       burn_ts: z
         .boolean()
         .nullish()
@@ -119,31 +123,31 @@ server.registerTool(
       sheet: z
         .boolean()
         .nullish()
-        .describe("Frames — a single contact-sheet JPG (2..80 frames, single clip)."),
+        .describe("Frames — a single contact-sheet JPG (2..80 frames, single clip); disables burn_ts."),
       clips: z
         .array(clipSchema)
         .nullish()
-        .describe("A list of {start,end} ranges (max 10) INSTEAD of start/end."),
+        .describe("A non-empty list of 1–10 {start,end} ranges INSTEAD of start/end."),
       stitch: z
         .boolean()
         .nullish()
         .describe(
-          "With clips, join them into one file (else a zip of clips); " +
-            "video/audio_only/both/short/nosound only.",
+          "With 2+ clips, join them into one file (else a zip of clips); ignored for a " +
+            "single clip; video/audio_only/both/short/nosound only.",
         ),
       wait: z
         .boolean()
         .default(true)
-        .describe("Block until ready (default) up to timeout_seconds."),
+        .describe("Poll until ready (default) up to the timeout_seconds polling deadline."),
       timeout_seconds: z
         .number()
         .int()
         .default(300)
-        .describe("Max seconds to wait when wait=true."),
+        .describe("Polling deadline in seconds when wait=true (default 300); submission + one in-flight status request can extend total wall-clock."),
       idempotency_key: z
         .string()
         .nullish()
-        .describe("A stable key so a retried request reuses the same job."),
+        .describe("A stable key (≤200 chars) so a retried request reuses the same job."),
     },
   },
   async (args) => {
@@ -167,8 +171,9 @@ server.registerTool(
     title: "Check a cut job",
     description:
       "Check a cut job's status by its id. Returns the job's state (accepted / queued / " +
-      "produced / delivered / failed / refunded) and, once produced, a download_url. Use " +
-      "this to poll a job started with cut_youtube_video(wait=false) or one that timed out.",
+      "produced / delivered / failed / refunded) and, once produced/delivered, a " +
+      "download_url when a download token is available. Use this to poll a job started " +
+      "with cut_youtube_video(wait=false) or one that timed out.",
     inputSchema: {
       job_id: z.string().describe("The job id (a UUID) returned by cut_youtube_video."),
     },
