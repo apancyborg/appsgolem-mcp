@@ -3,8 +3,8 @@
 An [MCP](https://modelcontextprotocol.io) server for the **AppsGolem** YouTube
 cutter API. It lets an AI agent (Claude Desktop, Claude Code, Cursor, …) cut
 clips from YouTube videos — in any format the web cutter supports — and get a
-direct download URL back. This is the TypeScript/Node port of the Python
-[`appsgolem-mcp`](../mcp_server) package — the same tools and parameter surface.
+direct download URL back. The REST logic lives in a small, dependency-light
+client (`src/client.ts`); `src/server.ts` is the thin MCP tool layer over it.
 
 ## Requirements
 
