@@ -1,6 +1,7 @@
 {
   "name": "appsgolem-mcp",
   "version": "0.1.1",
+  "mcpName": "io.github.apancyborg/appsgolem-mcp",
   "description": "MCP server for the AppsGolem YouTube cutter API — cut clips programmatically, or let an AI agent do it. TypeScript/Node port of the Python appsgolem-mcp.",
   "keywords": [
     "mcp",

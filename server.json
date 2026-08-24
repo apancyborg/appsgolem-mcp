@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.apancyborg/appsgolem-mcp",
+  "title": "AppsGolem YouTube Cutter",
+  "description": "Cut clips from YouTube videos in any format the AppsGolem web cutter supports (MP4 up to 4K, MP3/M4A/WAV/FLAC, GIF, JPG frames, vertical, stitch) and get a direct download URL back.",
+  "version": "0.1.1",
+  "websiteUrl": "https://appsgolem.com/agents",
+  "repository": {
+    "url": "https://github.com/apancyborg/appsgolem-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "appsgolem-mcp",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "APPSGOLEM_API_KEY",
+          "description": "Your AppsGolem API key (ag_live_…). Create one at https://appsgolem.com/agents.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "APPSGOLEM_API_BASE",
+          "description": "Override the API base URL (default https://appsgolem.com) for self-host or dev.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
