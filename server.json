@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.apancyborg/appsgolem-mcp",
   "title": "AppsGolem YouTube Cutter",
-  "description": "Cut clips from YouTube videos in any format the AppsGolem web cutter supports (MP4 up to 4K, MP3/M4A/WAV/FLAC, GIF, JPG frames, vertical, stitch) and get a direct download URL back.",
+  "description": "Cut clips from YouTube videos in any format and get a direct download URL.",
   "version": "0.1.2",
   "websiteUrl": "https://appsgolem.com/agents",
   "repository": {
