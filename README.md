@@ -8,7 +8,7 @@ clips from YouTube videos — in any format the web cutter supports — and get 
 direct download URL back. The REST logic lives in a small, dependency-light
 client (`src/client.ts`); `src/server.ts` is the thin MCP tool layer over it.
 
-> **Get your API key → https://appsgolem.com/agents** — sign up, add prepaid
+> **Get your API key → [appsgolem.com/agents](https://appsgolem.com/agents)** — sign up, add prepaid
 > credits, and generate a key (`ag_live_…`). That page also has copy-paste
 > setup for Claude Code, Codex, Cursor, and any MCP client, plus a prompt
 > cookbook.
@@ -17,7 +17,7 @@ client (`src/client.ts`); `src/server.ts` is the thin MCP tool layer over it.
 
 - Node.js >= 18 (uses the global `fetch`).
 - An AppsGolem API key (`ag_live_…`) — get one at
-  **<https://appsgolem.com/agents>** (sign up → add credits → generate a key in
+  **[appsgolem.com/agents](https://appsgolem.com/agents)** (sign up → add credits → generate a key in
   your dashboard). Credits are prepaid; buy a pack or a subscription, no
   auto-renewal required.
 

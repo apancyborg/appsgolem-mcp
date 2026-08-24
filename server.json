@@ -3,7 +3,7 @@
   "name": "io.github.apancyborg/appsgolem-mcp",
   "title": "AppsGolem YouTube Cutter",
   "description": "Cut clips from YouTube videos in any format the AppsGolem web cutter supports (MP4 up to 4K, MP3/M4A/WAV/FLAC, GIF, JPG frames, vertical, stitch) and get a direct download URL back.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "websiteUrl": "https://appsgolem.com/agents",
   "repository": {
     "url": "https://github.com/apancyborg/appsgolem-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "appsgolem-mcp",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       },
