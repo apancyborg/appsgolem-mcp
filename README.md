@@ -215,13 +215,33 @@ failures are the exception — see the Tools note above). On failure the object 
 | `http_error`     | A ≥400 response whose JSON body isn't an `{ error: … }` object (carries `status`). |
 | `bad_response`   | A success response whose body isn't a JSON object (array/scalar/null), or — with `wait: true` — a cut submission that came back without a usable job `id`. |
 
-API-level errors (e.g. validation `400`, rate-limit `429`) are returned as the
-API's own error body plus a `status` field; a `429` also includes `retry_after`
-(seconds) when the server sends `Retry-After`, so an agent can back off.
+API-level errors — validation `400`, `402 insufficient_credits`,
+`404 not_found`, `409 idempotency_conflict` / `duplicate_in_flight`,
+`429 rate_limited`, and `503 rate_limiter_unavailable` / `database_busy` — are
+returned as the API's own error body plus a `status` field. A `429` also
+includes `retry_after` (seconds, from `Retry-After`) plus a `reason`
+(`submission_cap` · `request_rate` · `poll_rate`) so an agent can tell which
+limit it hit and back off correctly. A `503` is usually transient (retry after
+a short delay), but a persistent `503` is a server-side problem to report — not
+to retry indefinitely.
+
+**Status polling is not rate-limited for normal use** — checking a job's
+progress never counts against your submissions/hour cap. You never need to
+throttle `get_cut_status` yourself: `cut_youtube_video(wait=true)` polls and
+paces for you (honoring the server's `poll_after` cadence and any `Retry-After`),
+so a single tool call handles even long jobs.
+
+Produced download links expire after a bounded window (~72 hours by default on
+appsgolem.com; configurable per deployment) — fetch the file within it.
 
 A relative `download_url` (the API returns a path) is resolved to a full URL
-against the configured API base **only when it stays on that origin**;
-already-absolute URLs and off-origin references are left unchanged.
+against the configured API base **only when the result stays on that origin**.
+Any `download_url` that resolves **off** the API's origin — an absolute URL to
+another host, or a relative path that escapes the origin — is **dropped** for
+safety: the field is removed and the result carries `download_url_dropped: true`,
+so you can tell it apart from a job that simply isn't produced yet. When
+`cut_youtube_video` is waiting for you (`wait=true`, the default), an off-origin
+link surfaces as a `download_url_unsafe` error instead of handing back a bad URL.
 
 ---
 

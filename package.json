@@ -10,13 +10,15 @@
     "url": "git+https://github.com/apancyborg/appsgolem-mcp.git"
   },
   "license": "MIT",
+  "author": "Rapid Ventures OÜ",
   "type": "module",
   "bin": {
     "appsgolem-mcp": "dist/server.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"

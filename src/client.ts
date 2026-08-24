@@ -10,6 +10,7 @@
  * failure (HTTP error body, network error, or bad JSON). Nothing rejects for
  * an API-level error — an agent gets a structured result, not a stack trace.
  */
+import { createHash } from "node:crypto";
 
 // Terminal job states (from account.api_models.ApiJob).
 const READY_STATES = new Set(["produced", "delivered"]);
@@ -85,6 +86,29 @@ function canonicalUuid(raw: string): string | null {
 
 function isPlainObject(v: unknown): v is Dict {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Deterministic JSON with RECURSIVELY sorted object keys — parity with the
+ *  Python client's `json.dumps(..., sort_keys=True)`. Used only to derive a
+ *  stable auto-Idempotency-Key, so logically-identical requests (incl. nested
+ *  clip objects written in a different key order) hash the same and dedupe. */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  const obj = v as Record<string, unknown>;
+  return "{" + Object.keys(obj).sort()
+    .map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k]))
+    .join(",") + "}";
+}
+
+/** ms to wait before the next poll, from a response's advisory hint
+ *  (`poll_after`, or `retry_after` on a 429), converting seconds → ms. Falls
+ *  back to `defaultMs` when the hint is absent/non-numeric. Caller floors/clamps. */
+function pollDelayMs(resp: Dict, defaultMs: number, key = "poll_after"): number {
+  const v = resp[key];
+  // Number.isFinite rejects NaN/±Infinity (parity with the Python client, whose
+  // json parser can produce them); a non-finite delay would break the sleep clamp.
+  return typeof v === "number" && Number.isFinite(v) ? v * 1000 : defaultMs;
 }
 
 export class ApiClient {
@@ -191,27 +215,34 @@ export class ApiClient {
     return this.absolutize(body);
   }
 
-  /** Make a relative `download_url` (the API returns a path) into a full URL
-   *  the agent/user can fetch directly. Already-absolute URLs (with a scheme)
-   *  are left untouched; any relative reference is resolved against the base. */
+  /** Resolve `download_url` to a full URL the agent can fetch — but ONLY when
+   *  it stays on the API's OWN origin. EVERY url is origin-checked, not just
+   *  relative ones: an ABSOLUTE off-origin url (`https://evil/x`, `file://…`)
+   *  is the easy way to defeat a relative-only guard, so a crafted/tampered
+   *  response supplying one gets DROPPED (with a `download_url_dropped` marker)
+   *  rather than handed to the agent. `new URL(dl, base)` resolves relative refs
+   *  and normalizes backslashes (`\\evil/x` → the off-origin `//evil/x`). */
   private absolutize(body: Dict): Dict {
     const dl = body.download_url;
-    if (typeof dl === "string" && dl && !/^[a-z][a-z0-9+.\-]*:/i.test(dl)) {
-      try {
-        const resolved = new URL(dl, this.base);
-        // Only rewrite when the relative ref stays on the API's OWN origin. A
-        // protocol-relative or backslash-normalised ref (e.g. "\\evil/x" ->
-        // //evil/x under WHATWG URL parsing) that jumps to another host is
-        // left untouched, so a downstream auto-download can't be redirected
-        // off-origin by a crafted API response.
-        if (resolved.origin === new URL(this.base).origin) {
-          return { ...body, download_url: resolved.href };
-        }
-      } catch {
-        // Malformed relative ref — leave the original value untouched.
+    if (dl === undefined || dl === null) return body; // no url to resolve
+    const drop = (): Dict => {
+      const out: Dict = { ...body };
+      delete out.download_url;
+      out.download_url_dropped = true;
+      return out;
+    };
+    // Present but not a usable string (a number, "") — treat as unsafe so a
+    // truthy non-string can't read downstream as a "ready" download.
+    if (typeof dl !== "string" || !dl) return drop();
+    try {
+      const resolved = new URL(dl, this.base); // absolute AND relative; normalizes "\"
+      if (resolved.origin === new URL(this.base).origin) {
+        return { ...body, download_url: resolved.href };
       }
+    } catch {
+      // Malformed ref — treat as unsafe, drop below.
     }
-    return body;
+    return drop();
   }
 
   // -- endpoints ------------------------------------------------------
@@ -241,8 +272,15 @@ export class ApiClient {
     for (const [k, v] of optional) {
       if (v !== undefined && v !== null) payload[k] = v;
     }
-    const extra = p.idempotency_key ? { "Idempotency-Key": p.idempotency_key } : undefined;
-    return this.request("POST", "/v1/cuts", payload, extra);
+    // Auto-derive a STABLE Idempotency-Key from the request when none is given,
+    // so an agent that re-invokes the tool after a wait-timeout (instead of
+    // polling) reuses the same job rather than creating + paying for a
+    // duplicate. Deterministic on the payload (built in a fixed order) →
+    // identical requests dedupe; pass an explicit key for a deliberately-fresh
+    // cut. Capped well under the server's 200-char Idempotency-Key limit.
+    const idem = p.idempotency_key
+      ?? "auto-" + createHash("sha256").update(stableStringify(payload)).digest("hex").slice(0, 32);
+    return this.request("POST", "/v1/cuts", payload, { "Idempotency-Key": idem });
   }
 
   async getStatus(jobId: string): Promise<Dict> {
@@ -280,26 +318,60 @@ export class ApiClient {
 
     const deadline = this.clock() + maxWaitMs;
     let last: Dict = submit;
+    const stillProcessing = (l: Dict): Dict => ({
+      ...l,
+      still_processing: true,
+      message: "Cut is still processing; call get_cut_status with this id to check again.",
+    });
+    // ms delay before the NEXT status GET, from the previous response's advisory
+    // poll_after (seconds) — the 202 carries one, so the first poll is paced too
+    // — else the configured interval; a 429 substitutes its Retry-After. Status
+    // polling is exempt from rate limiting, so this is cadence, not throttle-
+    // avoidance; a denied poll costs no token, so backing off and retrying
+    // (rather than aborting) is safe. NB: one final in-flight GET may start at
+    // the deadline and extend wall-clock by up to one request timeout — a
+    // documented part of the wait contract.
+    let waitMs = pollDelayMs(submit, this.pollIntervalMs);
+    let netErrors = 0;
     for (;;) {
+      const remaining = deadline - this.clock();
+      if (remaining <= 0) return stillProcessing(last);
+      // Never sleep past the deadline (maxWait stays a real cap); floor to avoid
+      // a busy-spin if a server hint is 0/negative.
+      await this.sleep(Math.min(Math.max(waitMs, 500), remaining));
       const status = await this.getStatus(jobId);
-      if ("error" in status) return status;
+      if ("error" in status) {
+        // Transient (rate-limit / network blip) → back off + retry instead of
+        // aborting the wait; a network error that PERSISTS is surfaced after a
+        // few tries so a real outage isn't swallowed until the deadline.
+        if (status.error === "rate_limited") {
+          netErrors = 0;
+          waitMs = pollDelayMs(status, this.pollIntervalMs, "retry_after");
+          continue;
+        }
+        if (status.error === "network_error") {
+          netErrors += 1;
+          if (netErrors >= 3) return status; // surface a persistent outage (3 in a row)
+          waitMs = this.pollIntervalMs;
+          continue;
+        }
+        return status;
+      }
+      netErrors = 0;
       last = status;
       const state = status.state;
-      if (typeof state === "string" && READY_STATES.has(state)) return status;
-      if (typeof state === "string" && DEAD_STATES.has(state)) {
+      if (typeof state === "string" && READY_STATES.has(state)) {
+        if (status.download_url) return status;
+        if (status.download_url_dropped) {
+          // Off-origin/unsafe url the client refused — polling won't fix it.
+          return { error: "download_url_unsafe", id: jobId,
+                   message: "the API returned an off-origin download URL" };
+        }
+        // Produced but the download token isn't minted yet — keep waiting.
+      } else if (typeof state === "string" && DEAD_STATES.has(state)) {
         return { error: "cut_failed", state, id: jobId };
       }
-      const remaining = deadline - this.clock();
-      if (remaining <= 0) {
-        return {
-          ...last,
-          still_processing: true,
-          message: "Cut is still processing; call get_cut_status with this id to check again.",
-        };
-      }
-      // Never sleep past the deadline (so maxWait is a real cap even when
-      // pollInterval is larger than the time left).
-      await this.sleep(Math.min(this.pollIntervalMs, remaining));
+      waitMs = pollDelayMs(status, this.pollIntervalMs);
     }
   }
 }

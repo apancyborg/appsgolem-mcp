@@ -116,8 +116,17 @@ test("a relative download_url is absolutized against the base", async () => {
   assert.equal(out.download_url, "http://localhost:8000/v1/download/tok/clip.mp4");
 });
 
-test("an absolute download_url is left untouched", async () => {
-  const abs = "https://cdn.example.com/clip.mp4";
+test("an absolute OFF-ORIGIN download_url is dropped (not passed through)", async () => {
+  for (const abs of ["https://cdn.evil.com/clip.mp4", "http://169.254.169.254/x", "file:///etc/passwd"]) {
+    const { c } = clientWith(() => json({ state: "produced", download_url: abs }));
+    const out = await c.getStatus("e48deba4-b26b-4631-ae11-7773a1a1b1a2");
+    assert.ok(!("download_url" in out), abs);
+    assert.equal(out.download_url_dropped, true, abs);
+  }
+});
+
+test("an absolute SAME-ORIGIN download_url is kept", async () => {
+  const abs = "http://localhost:8000/v1/download/tok/clip.mp4";
   const { c } = clientWith(() => json({ state: "produced", download_url: abs }));
   const out = await c.getStatus("e48deba4-b26b-4631-ae11-7773a1a1b1a2");
   assert.equal(out.download_url, abs);
@@ -134,6 +143,66 @@ test("cutAndWait polls until produced, then returns the ready status", async () 
   assert.equal(out.state, "produced");
   assert.equal(out.download_url, "http://localhost:8000/v1/download/t/c.mp4");
   assert.equal(calls.filter((x) => x.init.method === "GET").length, 3);
+});
+
+test("cutAndWait honors the server's poll_after cadence", async () => {
+  const sleeps = [];
+  const states = ["queued", "produced"];
+  let i = 0;
+  const { c } = clientWith(
+    (url, init) => {
+      if (init.method === "POST")
+        return json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted", poll_after: 7 }, 202);
+      const state = states[i++];
+      const body = { state, poll_after: 5 };
+      if (state === "produced") body.download_url = "/v1/download/t/c.mp4";
+      return json(body);
+    },
+    { sleep: async (ms) => { sleeps.push(ms); } },
+  );
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.state, "produced");
+  assert.equal(sleeps[0], 7000); // first poll paced by the 202's poll_after (7s)
+  assert.ok(sleeps.includes(5000)); // subsequent poll uses the GET's poll_after (5s)
+});
+
+test("cutAndWait backs off on a rate-limited poll and retries", async () => {
+  const sleeps = [];
+  let n = 0;
+  const { c } = clientWith(
+    (url, init) => {
+      if (init.method === "POST")
+        return json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted" }, 202);
+      n++;
+      if (n === 1)
+        return json({ error: "rate_limited", reason: "poll_rate", retry_after: 4 }, 429, { "Retry-After": "4" });
+      return json({ state: "produced", download_url: "/v1/download/t/c.mp4" });
+    },
+    { sleep: async (ms) => { sleeps.push(ms); } },
+  );
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.state, "produced"); // retried after backoff, not aborted
+  assert.ok(sleeps.includes(4000)); // honored Retry-After (4s -> 4000ms)
+});
+
+test("cutAndWait falls back to the default interval for a non-numeric poll_after", async () => {
+  const sleeps = [];
+  const states = ["queued", "produced"];
+  let i = 0;
+  const { c } = clientWith(
+    (url, init) => {
+      if (init.method === "POST")
+        return json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted", poll_after: "soon" }, 202);
+      const state = states[i++];
+      const body = { state, poll_after: "later" };
+      if (state === "produced") body.download_url = "/v1/download/t/c.mp4";
+      return json(body);
+    },
+    { sleep: async (ms) => { sleeps.push(ms); }, pollIntervalMs: 2500 },
+  );
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.state, "produced");
+  assert.ok(sleeps.length > 0 && sleeps.every((s) => s === 2500)); // garbage -> default, no NaN
 });
 
 test("cutAndWait returns cut_failed on a dead state", async () => {
@@ -195,8 +264,99 @@ test("429 Retry-After with a non-integer value yields retry_after null", async (
   assert.equal(out.retry_after, null);
 });
 
-test("a protocol-relative download_url is NOT rewritten off-origin", async () => {
+test("a protocol-relative off-origin download_url is dropped", async () => {
   const { c } = clientWith(() => json({ state: "produced", download_url: "//evil.example/x" }));
   const out = await c.getStatus("e48deba4-b26b-4631-ae11-7773a1a1b1a2");
-  assert.equal(out.download_url, "//evil.example/x"); // untouched, no host jump
+  assert.ok(!("download_url" in out));       // no host jump handed to the agent
+  assert.equal(out.download_url_dropped, true);
+});
+
+test("createCut auto-derives a stable Idempotency-Key when none is given", async () => {
+  const seen = [];
+  const { c } = clientWith((url, init) => {
+    if (init.method === "POST") seen.push(init.headers["Idempotency-Key"]);
+    return json({ id: "x", state: "accepted" }, 202);
+  });
+  await c.createCut({ url: "u", start: "0:1", end: "0:2" });
+  await c.createCut({ url: "u", start: "0:1", end: "0:2" }); // identical
+  await c.createCut({ url: "u", start: "0:1", end: "0:3" }); // different
+  assert.ok(seen[0] && seen[0].startsWith("auto-"));
+  assert.equal(seen[0], seen[1]);      // identical → same key (dedupe)
+  assert.notEqual(seen[0], seen[2]);   // different request → different key
+});
+
+test("cutAndWait waits through produced-without-download_url, then returns it", async () => {
+  const seq = [
+    { id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "produced" },
+    { id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "produced", download_url: "/v1/download/t/o.mp4" },
+  ];
+  let i = 0;
+  const { c } = clientWith((url, init) =>
+    init.method === "POST"
+      ? json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted" }, 202)
+      : json(seq[i++]),
+  );
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.state, "produced");
+  assert.ok(out.download_url.startsWith("http://localhost:8000/"));
+});
+
+test("cutAndWait surfaces an error for an off-origin download_url", async () => {
+  const { c } = clientWith((url, init) =>
+    init.method === "POST"
+      ? json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted" }, 202)
+      : json({ state: "produced", download_url: "https://evil/x.mp4" }),
+  );
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.error, "download_url_unsafe");
+});
+
+test("cutAndWait retries a transient network error, then succeeds", async () => {
+  let n = 0;
+  const { c } = clientWith((url, init) => {
+    if (init.method === "POST") return json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted" }, 202);
+    n += 1;
+    if (n === 1) throw new Error("blip");   // → network_error
+    return json({ state: "produced", download_url: "/v1/download/t/o.mp4" });
+  });
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.state, "produced");      // retried, not aborted
+});
+
+test("cutAndWait surfaces a persistent network error after 3 attempts", async () => {
+  let gets = 0;
+  const { c } = clientWith((url, init) => {
+    if (init.method === "POST") return json({ id: "e48deba4-b26b-4631-ae11-7773a1a1b1a2", state: "accepted" }, 202);
+    gets += 1;
+    throw new Error("down");
+  });
+  const out = await c.cutAndWait({ url: "u", maxWaitSeconds: 300 });
+  assert.equal(out.error, "network_error");
+  assert.equal(gets, 3); // exactly 3 consecutive, then surfaced
+});
+
+test("auto-idempotency is stable across nested clip key order", async () => {
+  const seen = [];
+  const { c } = clientWith((url, init) => {
+    if (init.method === "POST") seen.push(init.headers["Idempotency-Key"]);
+    return json({ id: "x", state: "accepted" }, 202);
+  });
+  await c.createCut({ url: "u", clips: [{ start: "0:00", end: "0:05" }] });
+  await c.createCut({ url: "u", clips: [{ end: "0:05", start: "0:00" }] }); // reordered keys
+  assert.equal(seen[0], seen[1]); // logically identical → same key (recursive sort)
+});
+
+test("a non-string download_url is dropped", async () => {
+  const { c } = clientWith(() => json({ state: "produced", download_url: 123 }));
+  const out = await c.getStatus("e48deba4-b26b-4631-ae11-7773a1a1b1a2");
+  assert.ok(!("download_url" in out));
+  assert.equal(out.download_url_dropped, true);
+});
+
+test("an absolute backslash-userinfo off-origin url is dropped", async () => {
+  const { c } = clientWith(() => json({ state: "produced",
+    download_url: "https://evil.com\\@localhost:8000/x/out.mp4" }));
+  const out = await c.getStatus("e48deba4-b26b-4631-ae11-7773a1a1b1a2");
+  assert.ok(!("download_url" in out)); // WHATWG resolves off-origin to evil.com
+  assert.equal(out.download_url_dropped, true);
 });
