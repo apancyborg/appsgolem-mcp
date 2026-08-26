@@ -1,0 +1,38 @@
+# Smithery configuration — https://smithery.ai/docs
+#
+# Lets Smithery run the AppsGolem MCP server LOCALLY over stdio (via `npx
+# appsgolem-mcp`) on the user's own machine, collecting their API key through
+# Smithery's config UI and passing it as an env var. The key never leaves the
+# user's machine — this is a local server backed by the AppsGolem cloud API,
+# not a hosted/remote deployment.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - apiKey
+    properties:
+      apiKey:
+        type: string
+        title: AppsGolem API key
+        description: >-
+          Your AppsGolem API key (starts with "ag_live_"). Create one in the
+          AppsGolem dashboard at https://appsgolem.com/api-billing/.
+      apiBase:
+        type: string
+        title: API base URL
+        default: https://appsgolem.com
+        description: >-
+          Advanced: override the AppsGolem API base URL. Leave as the default
+          unless you have a reason to change it.
+  commandFunction: |-
+    (config) => ({
+      command: "npx",
+      args: ["-y", "appsgolem-mcp"],
+      env: Object.assign(
+        { APPSGOLEM_API_KEY: config.apiKey },
+        config.apiBase ? { APPSGOLEM_API_BASE: config.apiBase } : {}
+      )
+    })
+  exampleConfig:
+    apiKey: ag_live_0000000000000000000000000000
