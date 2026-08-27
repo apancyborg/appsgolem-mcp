@@ -1,0 +1,12 @@
+# MCPB packs a self-contained bundle: manifest.json + the built dist/ + the
+# runtime node_modules. Exclude TypeScript source, tests, and dev-only config.
+# Patterns are anchored to the bundle root (leading /) so they DON'T match
+# node_modules internals — the bundle must ship complete runtime dependencies.
+/src/
+/test/
+/tsconfig.json
+/smithery.yaml
+/server.json
+/.gitignore
+/.mcpbignore
+*.mcpb

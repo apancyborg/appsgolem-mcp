@@ -1,0 +1,44 @@
+{
+  "manifest_version": "0.3",
+  "name": "appsgolem-mcp",
+  "display_name": "AppsGolem",
+  "version": "0.1.2",
+  "description": "Cut clips from any YouTube video via the AppsGolem API — pick the format and quality, get a direct download URL, and let an AI agent do the editing.",
+  "author": {
+    "name": "AppsGolem",
+    "url": "https://appsgolem.com"
+  },
+  "homepage": "https://appsgolem.com/agents/",
+  "documentation": "https://github.com/apancyborg/appsgolem-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apancyborg/appsgolem-mcp"
+  },
+  "license": "MIT",
+  "keywords": ["mcp", "youtube", "video", "cutter", "appsgolem", "ai"],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/server.js"],
+      "env": {
+        "APPSGOLEM_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "AppsGolem API key",
+      "description": "Your AppsGolem API key (starts with ag_live_). Create one in the AppsGolem dashboard at https://appsgolem.com/api-billing/.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=18"
+    }
+  }
+}
