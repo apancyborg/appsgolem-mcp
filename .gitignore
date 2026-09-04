@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.tgz
 npm-debug.log*
+
+# Publishing credentials written by the MCP registry CLI — never commit these.
+.mcpregistry_*
